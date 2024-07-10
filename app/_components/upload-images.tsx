@@ -2,7 +2,6 @@
 
 import { toast } from "@/components/ui/use-toast";
 import { uploadImage } from "../actions";
-import { ToastAction } from "@/components/ui/toast";
 
 const UploadImages = () => {
   async function handleSubmit(formData: FormData) {
