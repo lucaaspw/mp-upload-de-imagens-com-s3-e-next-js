@@ -3,87 +3,126 @@ import { DeleteObjectCommand, ListObjectsCommand, PutObjectCommand } from "@aws-
 import { s3Client } from "@/lib/s3client";
 import { revalidatePath } from "next/cache";
 
-export async function uploadImage(formData: FormData) {
-  const image = formData.get('image') as File;
-  if(!image.size){
+const MAX_IMAGE_SIZE = 2 * 1024 * 1024; // 2MB
+const BUCKET_NAME = 'lgdev-photos-upload';
+const MAX_IMAGES = 15;
+
+interface UploadResponse {
+  success: boolean;
+  message?: string;
+}
+
+async function validateImage(image: File): Promise<UploadResponse> {
+  if (!image.size) {
     return {
       success: false,
       message: 'Necessário adicionar um arquivo.'
-    }
+    };
   }
-  if(!image.type.startsWith('image/')){
+  if (!image.type.startsWith('image/')) {
     return {
       success: false,
-      message: 'Formato inválido, necessário ser do tipo imagem'
-    }
+      message: 'Formato inválido, necessário ser do tipo imagem.'
+    };
   }
-  if(image.size > 2 * 1024 * 1024){
+  if (image.size > MAX_IMAGE_SIZE) {
     return {
       success: false,
-      message: 'Arquivo muito grande maior que (2mb)',
-    }
+      message: 'Arquivo muito grande, maior que 2MB.'
+    };
   }
+  return { success: true };
+}
 
-  if(await toManyImages()){
-    return{
-      success: false,
-      message: "Sua aplicação atingiu o número máximo de imagens. Delete alguma para proceguir."
-    }
-  }
+async function tooManyImages(): Promise<boolean> {
+  const listObjectsParams = new ListObjectsCommand({ Bucket: BUCKET_NAME });
+  const objects = await s3Client.send(listObjectsParams);
+  return (objects.Contents?.length ?? 0) > MAX_IMAGES;
+}
 
+async function uploadToS3(image: File): Promise<void> {
   const arrayBuffer = await image.arrayBuffer();
-  const imageBuffer = Buffer.from(arrayBuffer) 
+  const imageBuffer = Buffer.from(arrayBuffer);
 
   const putObjectParams = new PutObjectCommand({
-    Bucket: 'lgdev-photos-upload',
+    Bucket: BUCKET_NAME,
     Key: image.name,
     Body: imageBuffer,
-    ContentType: 'image/jpeg'
-  })
+    ContentType: image.type
+  });
 
-  try{
-    await s3Client.send(putObjectParams);
-    revalidatePath('/')
-    return {
-      success: true,
-    }
-  } catch (e) {
-    return{
-      sucess: false,
-      message: 'Algo deu errado :/'
-    }
-  }
+  await s3Client.send(putObjectParams);
 }
 
-async function toManyImages() {
-  const listObjectsParams = new ListObjectsCommand({
-    Bucket: 'lgdev-photos-upload'
-  })
-
-  const objects = await s3Client.send(listObjectsParams)
-
-  if((objects.Contents?.length ?? 0) > 15){
-    return true;
-  }else{
-    return false;
+export async function uploadImage(formData: FormData): Promise<UploadResponse> {
+  const image = formData.get('image') as File;
+  const validationResponse = await validateImage(image);
+  if (!validationResponse.success) {
+    return validationResponse;
   }
-}
 
-export async function deleteImage(key: string){
-  const deleteObjectParams = new DeleteObjectCommand({
-    Bucket: 'lgdev-photos-upload',
-    Key: key
-  })
-  try{
-    await s3Client.send(deleteObjectParams)
-    revalidatePath('/');
-    return{
-      success: true,
-    };
-  } catch(e){
-    console.log("Erro:", e)
+  if (await tooManyImages()) {
     return {
       success: false,
+      message: "Sua aplicação atingiu o número máximo de imagens. Delete alguma para proceguir."
+    };
+  }
+
+  try {
+    await uploadToS3(image);
+    revalidatePath('/');
+    return { success: true };
+  } catch (e) {
+    console.error("Erro ao fazer upload da imagem:", e);
+    return {
+      success: false,
+      message: 'Algo deu errado :/'
+    };
+  }
+}
+
+export async function uploadImageUppy(formData: FormData): Promise<UploadResponse> {
+  const images: File[] = formData.getAll('images') as File[];
+
+  for (const image of images) {
+    const validationResponse = await validateImage(image);
+    if (!validationResponse.success) {
+      return validationResponse;
     }
+  }
+
+  if (await tooManyImages()) {
+    return {
+      success: false,
+      message: "Sua aplicação atingiu o número máximo de imagens. Delete alguma para proceguir."
+    };
+  }
+
+  try {
+    await Promise.all(images.map(uploadToS3));
+    revalidatePath('/');
+    return { success: true };
+  } catch (e) {
+    console.error("Erro ao fazer upload das imagens:", e);
+    return {
+      success: false,
+      message: 'Algo deu errado :/'
+    };
+  }
+}
+
+export async function deleteImage(key: string): Promise<UploadResponse> {
+  const deleteObjectParams = new DeleteObjectCommand({
+    Bucket: BUCKET_NAME,
+    Key: key
+  });
+
+  try {
+    await s3Client.send(deleteObjectParams);
+    revalidatePath('/');
+    return { success: true };
+  } catch (e) {
+    console.error("Erro ao deletar a imagem:", e);
+    return { success: false };
   }
 }
